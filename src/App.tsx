@@ -26,7 +26,8 @@ import {
   RefreshCw,
   CheckCircle2,
   Circle,
-  ListTodo
+  ListTodo,
+  Edit2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -918,9 +919,14 @@ export default function App() {
                           </span>
                         </div>
                       </div>
-                      <button className="p-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl transition group-hover:scale-110">
-                        <Volume2 className="w-3.5 h-3.5 text-zinc-400" />
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button className="p-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl transition group-hover:scale-110">
+                          <Edit2 className="w-3.5 h-3.5 text-zinc-400" />
+                        </button>
+                        <button className="p-2 bg-zinc-800 hover:bg-zinc-700 rounded-xl transition group-hover:scale-110">
+                          <Volume2 className="w-3.5 h-3.5 text-zinc-400" />
+                        </button>
+                      </div>
                     </div>
                   </motion.div>
                 ))}
