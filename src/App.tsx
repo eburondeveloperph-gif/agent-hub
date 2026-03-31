@@ -114,7 +114,9 @@ export default function App() {
   // Refs
   const liveClientRef = useRef<NexusLiveClient | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
 
   // Initialize Live Client
   useEffect(() => {
@@ -425,26 +427,59 @@ export default function App() {
 
   const toggleMic = async () => {
     if (isRecording) {
-      mediaRecorderRef.current?.stop();
+      if (scriptProcessorRef.current) {
+        scriptProcessorRef.current.disconnect();
+        scriptProcessorRef.current = null;
+      }
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop());
+        streamRef.current = null;
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
       setIsRecording(false);
     } else {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
-        mediaRecorderRef.current = mediaRecorder;
+        streamRef.current = stream;
         
-        mediaRecorder.ondataavailable = async (event) => {
-          if (event.data.size > 0) {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-              const base64 = (reader.result as string).split(',')[1];
-              liveClientRef.current?.sendAudio(base64);
-            };
-            reader.readAsDataURL(event.data);
+        const audioContext = new AudioContext({ sampleRate: 16000 });
+        audioContextRef.current = audioContext;
+        
+        const source = audioContext.createMediaStreamSource(stream);
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        scriptProcessorRef.current = processor;
+        
+        processor.onaudioprocess = (e) => {
+          const inputData = e.inputBuffer.getChannelData(0);
+          const pcm16 = new Int16Array(inputData.length);
+          for (let i = 0; i < inputData.length; i++) {
+            let s = Math.max(-1, Math.min(1, inputData[i]));
+            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
           }
+          
+          const buffer = new ArrayBuffer(pcm16.length * 2);
+          const view = new DataView(buffer);
+          for (let i = 0; i < pcm16.length; i++) {
+            view.setInt16(i * 2, pcm16[i], true); // little endian
+          }
+          
+          let binary = '';
+          const bytes = new Uint8Array(buffer);
+          const chunkSize = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunkSize) {
+            binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunkSize)));
+          }
+          const base64 = btoa(binary);
+          
+          liveClientRef.current?.sendAudio(base64);
         };
-
-        mediaRecorder.start(500);
+        
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+        
         setIsRecording(true);
       } catch (err) {
         console.error("Mic error:", err);

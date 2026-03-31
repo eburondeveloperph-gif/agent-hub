@@ -147,7 +147,7 @@ export class NexusLiveClient {
 
   private async handleIncomingAudio(base64: string) {
     if (!this.audioContext) {
-      this.audioContext = new AudioContext({ sampleRate: 16000 });
+      this.audioContext = new AudioContext({ sampleRate: 24000 });
     }
     if (this.audioContext.state === 'suspended') {
       await this.audioContext.resume();
@@ -173,7 +173,7 @@ export class NexusLiveClient {
 
     this.isPlaying = true;
     const chunk = this.audioQueue.shift()!;
-    const audioBuffer = this.audioContext.createBuffer(1, chunk.length, 16000);
+    const audioBuffer = this.audioContext.createBuffer(1, chunk.length, 24000);
     const channelData = audioBuffer.getChannelData(0);
     
     for (let i = 0; i < chunk.length; i++) {
