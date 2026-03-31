@@ -205,15 +205,20 @@ export default function App() {
       isMeetingRunning: true
     }));
 
+    // Randomly select 4 experts to participate to avoid hitting rate limits (15 RPM free tier)
+    const allExperts: AgentId[] = ['zeus', 'aquiles', 'orbit', 'echo', 'master', 'atlas', 'forge', 'nova', 'nexus'];
+    const shuffledExperts = allExperts.sort(() => 0.5 - Math.random());
+    const expertIds: AgentId[] = shuffledExperts.slice(0, 4);
+
     addMessage({ type: 'system', content: `Meeting started: "${prompt}"` });
+    addMessage({ type: 'system', content: `Participating experts: ${expertIds.map(id => agents[id].name).join(', ')}` });
     
     // Orchestration logic would go here
     // For now, let's simulate the flow
-    runMeetingFlow(fullPrompt);
+    runMeetingFlow(fullPrompt, expertIds);
   };
 
-  const runMeetingFlow = async (prompt: string) => {
-    const expertIds: AgentId[] = ['zeus', 'aquiles', 'orbit', 'echo', 'master', 'atlas', 'forge', 'nova', 'nexus'];
+  const runMeetingFlow = async (prompt: string, expertIds: AgentId[]) => {
     const anchor = agents['maximus'];
     
     // Helper to connect and speak
@@ -228,29 +233,57 @@ export default function App() {
       // Get recent history from DB for context
       const history = await db.getRecentMessages(20);
 
-      await liveClientRef.current?.connect(agent, {
-        onTranscription: (text, isUser) => {
-          if (isUser) handleUserTranscription(text);
-          else handleAgentTranscription(agentId, agent.name, text);
-        },
-        onToolCall: (name, args) => handleToolCall(agentId, name, args),
-        onAudioEnd: () => { 
-          audioFinished = true; 
-          completeLastMessage();
-        }
-      }, history);
+      try {
+        await liveClientRef.current?.connect(agent, {
+          onTranscription: (text, isUser) => {
+            if (isUser) handleUserTranscription(text);
+            else handleAgentTranscription(agentId, agent.name, text);
+          },
+          onToolCall: (name, args) => handleToolCall(agentId, name, args),
+          onAudioEnd: () => { 
+            audioFinished = true; 
+            completeLastMessage();
+          },
+          onError: (err) => {
+            console.error(`Live API Error for ${agent.name}:`, err);
+            audioFinished = true;
+            completeLastMessage();
+            addMessage({
+              id: Date.now().toString(),
+              agentId: 'system',
+              agentName: 'System',
+              content: `Connection error with ${agent.name}. Moving to next speaker.`,
+              timestamp: new Date(),
+              isComplete: true
+            });
+          }
+        }, history);
 
-      await liveClientRef.current?.sendText(textPrompt);
-      while (!audioFinished) await new Promise(r => setTimeout(r, 500));
-      completeLastMessage();
-      setAgents(prev => ({ ...prev, [agentId]: { ...prev[agentId], status: 'idle' } }));
+        await liveClientRef.current?.sendText(textPrompt);
+        while (!audioFinished) await new Promise(r => setTimeout(r, 500));
+      } catch (err: any) {
+        console.error(`Failed to connect to ${agent.name}:`, err);
+        addMessage({
+          id: Date.now().toString(),
+          agentId: 'system',
+          agentName: 'System',
+          content: `Failed to connect to ${agent.name}: ${err.message || 'Unknown error'}. Moving to next speaker.`,
+          timestamp: new Date(),
+          isComplete: true
+        });
+      } finally {
+        completeLastMessage();
+        setAgents(prev => ({ ...prev, [agentId]: { ...prev[agentId], status: 'idle' } }));
+        // Add a 4-second delay between speakers to respect rate limits (15 RPM free tier)
+        await new Promise(r => setTimeout(r, 4000));
+      }
     };
 
     // Phase 1: Welcome & Self-Intro (Maximus)
     setAgents(prev => ({ ...prev, maximus: { ...prev.maximus, status: 'speaking' } }));
     await agentSpeak(
       anchor,
-      `As the Meeting Anchor, give a short, high-energy intro of yourself (Maximus). Mention you're from EBuron AI (eburon.ai) and use some Pinoy expressions. Then, ask every participant in the room to quickly introduce themselves and their role.`,
+      `Hey everyone, welcome. As the Meeting Anchor, give a very natural, conversational intro of yourself (Maximus). Mention you're from EBuron AI (eburon.ai) and use some Pinoy expressions naturally. Then, casually ask everyone in the room to quickly introduce themselves. Keep it sounding like a real human talking.`,
       'maximus',
       'WELCOME'
     );
@@ -261,7 +294,7 @@ export default function App() {
       setAgents(prev => ({ ...prev, [id]: { ...prev[id], status: 'speaking' } }));
       await agentSpeak(
         agents[id],
-        `Give a very brief (1 sentence) introduction of yourself as ${agents[id].name}, the ${agents[id].role} at EBuron AI.`,
+        `Hey, just give a super quick, natural 1-sentence intro of yourself as ${agents[id].name}, the ${agents[id].role} at EBuron AI. Sound like a real person just saying hi in a meeting.`,
         id
       );
     }
@@ -270,7 +303,7 @@ export default function App() {
     setAgents(prev => ({ ...prev, maximus: { ...prev.maximus, status: 'speaking' } }));
     await agentSpeak(
       anchor,
-      `Salamat everyone! Now, listen up po. Master E (the user) has given us a challenge: "${prompt}". Give a detailed project overview of this Multi-Agent Edge Intelligence system. Explain the core requirements and the high stakes for EBuron AI. Then, ask the panel to start sharing their deep technical thoughts on how they will approach this based on their persona and skills.`,
+      `Salamat everyone! Okay, so listen up po. Master E (the user) has given us a challenge: "${prompt}". Give a natural, conversational overview of this Multi-Agent Edge Intelligence system. Explain the core requirements and why the stakes are high for EBuron AI. Then, casually ask the panel to start sharing their thoughts on how they'll approach this. Sound like a real human leading a meeting.`,
       'maximus',
       'FIRST_IMPRESSIONS'
     );
@@ -288,7 +321,7 @@ export default function App() {
         setAgents(prev => ({ ...prev, [interjectorId]: { ...prev[interjectorId], status: 'speaking' } }));
         await agentSpeak(
           interjector, 
-          "Give a very short, one-sentence lively interjection or acknowledgment based on the current conversation. Be funny or passionate!", 
+          "Just jump in with a very short, natural one-sentence interjection or reaction to what was just said. Be funny, passionate, or just agree/disagree naturally like a real human.", 
           interjectorId
         );
       }
@@ -317,15 +350,15 @@ export default function App() {
         return next;
       });
 
-      let thoughtPrompt = `As ${pickedAgent.role}, share your specific technical approach to "${prompt}". Focus on ${pickedAgent.expertise}. Keep it concise and actionable.`;
+      let thoughtPrompt = `As ${pickedAgent.role}, share your thoughts on "${prompt}" naturally. Focus on your expertise (${pickedAgent.expertise}), but talk like a real human in a meeting. Keep it conversational and not too long.`;
       
       // Inject Argument or Market Impact logic
       if (!argumentTriggered && spokenAgents.size >= 2 && Math.random() > 0.5) {
-        thoughtPrompt += " Also, respectfully disagree or challenge a previous point to ensure we're considering all risks. Keep it brief.";
+        thoughtPrompt += " Also, naturally disagree or challenge a previous point to make sure we're considering all risks. Keep it sounding like a real conversation.";
         argumentTriggered = true;
         setMeetingState(prev => ({ ...prev, phase: 'DEBATE' }));
       } else if (!marketImpactTriggered && spokenAgents.size >= 4 && Math.random() > 0.5) {
-        thoughtPrompt += " Additionally, briefly explain the market impact of this implementation.";
+        thoughtPrompt += " Also, casually mention the market impact of this idea.";
         marketImpactTriggered = true;
         setMeetingState(prev => ({ ...prev, phase: 'RISK_ASSESSMENT' }));
       }
@@ -338,7 +371,7 @@ export default function App() {
         setAgents(prev => ({ ...prev, maximus: { ...prev.maximus, status: 'speaking' } }));
         await agentSpeak(
           anchor,
-          `Thanks ${pickedAgent.name}. Who's next?`,
+          `Just naturally say thanks to ${pickedAgent.name} and casually ask who wants to go next.`,
           'maximus'
         );
       }
@@ -351,7 +384,7 @@ export default function App() {
     setAgents(prev => ({ ...prev, master: { ...prev.master, status: 'speaking' } }));
     await agentSpeak(
       agents['master'],
-      `As the CTO, synthesize all the points discussed into a final, production-level implementation plan for the Multi-Agent Edge Intelligence system. Be decisive and clear on the final tech stack and architecture. Update the Project To-Do List using the update_todo_list tool to reflect the final plan.`,
+      `As the CTO, naturally summarize the points discussed into a final plan for the Multi-Agent Edge Intelligence system. Be decisive but sound like a real human leader wrapping up a meeting. Update the Project To-Do List using the update_todo_list tool to reflect the final plan.`,
       'master'
     );
   };
