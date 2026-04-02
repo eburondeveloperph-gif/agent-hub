@@ -105,8 +105,13 @@ export class NexusLiveClient {
               this.stopAudio();
             }
           },
-          onerror: (err) => {
-            console.error("Live API Error:", err);
+          onerror: (err: any) => {
+            const errMsg = (err?.message || err?.toString() || '').toLowerCase();
+            if (errMsg.includes('quota')) {
+              console.warn("Live API Quota Exceeded. Please wait before trying again.");
+            } else {
+              console.error("Live API Error:", err);
+            }
             callbacks.onError?.(err);
           }
         }
@@ -114,13 +119,6 @@ export class NexusLiveClient {
 
       return this.session;
     } catch (err: any) {
-      if (err.message.includes('quota') && this.retryCount < this.maxRetries) {
-        this.retryCount++;
-        const delay = Math.pow(2, this.retryCount) * 1000;
-        console.warn(`Quota exceeded, retrying in ${delay}ms... (Attempt ${this.retryCount}/${this.maxRetries})`);
-        await new Promise(r => setTimeout(r, delay));
-        return this.connect(agent, callbacks, history);
-      }
       callbacks.onError?.(err);
       throw err;
     }

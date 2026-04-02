@@ -197,6 +197,8 @@ export default function App() {
   };
 
   const startMeeting = async (prompt: string) => {
+    if (meetingState.isMeetingRunning) return;
+
     const fullPrompt = prompt + getContextPrompt();
     setMeetingState(prev => ({
       ...prev,
@@ -205,10 +207,10 @@ export default function App() {
       isMeetingRunning: true
     }));
 
-    // Randomly select 4 experts to participate to avoid hitting rate limits (15 RPM free tier)
+    // Randomly select 2 experts to participate to avoid hitting rate limits (15 RPM free tier)
     const allExperts: AgentId[] = ['zeus', 'aquiles', 'orbit', 'echo', 'master', 'atlas', 'forge', 'nova', 'nexus'];
     const shuffledExperts = allExperts.sort(() => 0.5 - Math.random());
-    const expertIds: AgentId[] = shuffledExperts.slice(0, 4);
+    const expertIds: AgentId[] = shuffledExperts.slice(0, 2);
 
     addMessage({ type: 'system', content: `Meeting started: "${prompt}"` });
     addMessage({ type: 'system', content: `Participating experts: ${expertIds.map(id => agents[id].name).join(', ')}` });
@@ -222,8 +224,9 @@ export default function App() {
     const anchor = agents['maximus'];
     
     // Helper to connect and speak
-    const agentSpeak = async (agent: Agent, textPrompt: string, agentId: AgentId, phaseName?: string) => {
+    const agentSpeak = async (agent: Agent, textPrompt: string, agentId: AgentId, phaseName?: string): Promise<boolean> => {
       let audioFinished = false;
+      let success = true;
       
       // Update meeting state phase if provided
       if (phaseName) {
@@ -244,88 +247,76 @@ export default function App() {
             audioFinished = true; 
             completeLastMessage();
           },
-          onError: (err) => {
-            console.error(`Live API Error for ${agent.name}:`, err);
+          onError: (err: any) => {
+            const errMsg = (err?.message || err?.toString() || '').toLowerCase();
+            if (errMsg.includes('quota')) {
+              console.warn(`Live API Quota Exceeded for ${agent.name}.`);
+            } else {
+              console.error(`Live API Error for ${agent.name}:`, err);
+            }
             audioFinished = true;
+            success = false;
             completeLastMessage();
+            
+            let errorMessage = `Connection error with ${agent.name}.`;
+            if (errMsg.includes('quota')) {
+              errorMessage = `Gemini API Quota Exceeded. The free tier allows 15 requests per minute. Please wait a moment before trying again.`;
+            }
+            
             addMessage({
-              id: Date.now().toString(),
-              agentId: 'system',
-              agentName: 'System',
-              content: `Connection error with ${agent.name}. Moving to next speaker.`,
-              timestamp: new Date(),
-              isComplete: true
+              type: 'system',
+              content: errorMessage
             });
           }
         }, history);
 
         await liveClientRef.current?.sendText(textPrompt);
-        while (!audioFinished) await new Promise(r => setTimeout(r, 500));
+        while (!audioFinished) await new Promise(r => setTimeout(r, 10));
       } catch (err: any) {
-        console.error(`Failed to connect to ${agent.name}:`, err);
+        success = false;
+        
+        const errMsg = (err?.message || err?.toString() || '').toLowerCase();
+        let errorMessage = `Failed to connect to ${agent.name}: ${err.message || 'Unknown error'}.`;
+        if (errMsg.includes('quota')) {
+          console.warn(`Live API Quota Exceeded for ${agent.name}.`);
+          errorMessage = `Gemini API Quota Exceeded. The free tier allows 15 requests per minute. Please wait a moment before trying again.`;
+        } else {
+          console.error(`Failed to connect to ${agent.name}:`, err);
+        }
+        
         addMessage({
-          id: Date.now().toString(),
-          agentId: 'system',
-          agentName: 'System',
-          content: `Failed to connect to ${agent.name}: ${err.message || 'Unknown error'}. Moving to next speaker.`,
-          timestamp: new Date(),
-          isComplete: true
+          type: 'system',
+          content: errorMessage
         });
       } finally {
         completeLastMessage();
         setAgents(prev => ({ ...prev, [agentId]: { ...prev[agentId], status: 'idle' } }));
-        // Add a 4-second delay between speakers to respect rate limits (15 RPM free tier)
-        await new Promise(r => setTimeout(r, 4000));
+        // Add a minimal delay between speakers for fast latency
+        await new Promise(r => setTimeout(r, 10));
       }
+      
+      return success;
     };
 
-    // Phase 1: Welcome & Self-Intro (Maximus)
+    // Phase 1: Welcome & Project Overview (Maximus)
     setAgents(prev => ({ ...prev, maximus: { ...prev.maximus, status: 'speaking' } }));
-    await agentSpeak(
+    const welcomeSuccess = await agentSpeak(
       anchor,
-      `Hey everyone, welcome. As the Meeting Anchor, give a very natural, conversational intro of yourself (Maximus). Mention you're from EBuron AI (eburon.ai) and use some Pinoy expressions naturally. Then, casually ask everyone in the room to quickly introduce themselves. Keep it sounding like a real human talking.`,
+      `Hey everyone, welcome. As the Meeting Anchor, give a very natural, conversational intro of yourself (Maximus). Mention you're from EBuron AI (eburon.ai) and use some Pinoy expressions naturally. Then, give a natural, conversational overview of this challenge from Master E: "${prompt}". Explain the core requirements and casually ask the panel to start sharing their thoughts. Sound like a real human leading a meeting.`,
       'maximus',
       'WELCOME'
     );
-
-    // Phase 2: Participant Intros (Round Robin)
-    setMeetingState(prev => ({ ...prev, phase: 'INTRODUCTIONS' }));
-    for (const id of expertIds) {
-      setAgents(prev => ({ ...prev, [id]: { ...prev[id], status: 'speaking' } }));
-      await agentSpeak(
-        agents[id],
-        `Hey, just give a super quick, natural 1-sentence intro of yourself as ${agents[id].name}, the ${agents[id].role} at EBuron AI. Sound like a real person just saying hi in a meeting.`,
-        id
-      );
+    if (!welcomeSuccess) {
+      setMeetingState(prev => ({ ...prev, isMeetingRunning: false, phase: 'WAIT_FOR_PROMPT' }));
+      return;
     }
 
-    // Phase 3: Project Overview (Maximus)
-    setAgents(prev => ({ ...prev, maximus: { ...prev.maximus, status: 'speaking' } }));
-    await agentSpeak(
-      anchor,
-      `Salamat everyone! Okay, so listen up po. Master E (the user) has given us a challenge: "${prompt}". Give a natural, conversational overview of this Multi-Agent Edge Intelligence system. Explain the core requirements and why the stakes are high for EBuron AI. Then, casually ask the panel to start sharing their thoughts on how they'll approach this. Sound like a real human leading a meeting.`,
-      'maximus',
-      'FIRST_IMPRESSIONS'
-    );
-
-    // Phase 4: Discussion Loop
+    // Phase 2: Discussion Loop
+    setMeetingState(prev => ({ ...prev, phase: 'FIRST_IMPRESSIONS' }));
     const spokenAgents = new Set<AgentId>();
     let argumentTriggered = false;
-    let marketImpactTriggered = false;
 
     while (spokenAgents.size < expertIds.length) {
-      // Randomly trigger a quick interjection from a random agent (not the one about to speak)
-      if (Math.random() > 0.6 && spokenAgents.size > 0) {
-        const interjectorId = expertIds[Math.floor(Math.random() * expertIds.length)];
-        const interjector = agents[interjectorId];
-        setAgents(prev => ({ ...prev, [interjectorId]: { ...prev[interjectorId], status: 'speaking' } }));
-        await agentSpeak(
-          interjector, 
-          "Just jump in with a very short, natural one-sentence interjection or reaction to what was just said. Be funny, passionate, or just agree/disagree naturally like a real human.", 
-          interjectorId
-        );
-      }
-
       // Simulate agents raising hands
       const availableAgents = expertIds.filter(id => !spokenAgents.has(id));
       const raisingHands = availableAgents.filter(() => Math.random() > 0.3);
@@ -337,7 +328,7 @@ export default function App() {
         return next;
       });
 
-      await new Promise(r => setTimeout(r, 500)); // Reduced from 1500
+      await new Promise(r => setTimeout(r, 10));
 
       const pickedId = raisingHands[Math.floor(Math.random() * raisingHands.length)];
       const pickedAgent = agents[pickedId];
@@ -352,32 +343,22 @@ export default function App() {
 
       let thoughtPrompt = `As ${pickedAgent.role}, share your thoughts on "${prompt}" naturally. Focus on your expertise (${pickedAgent.expertise}), but talk like a real human in a meeting. Keep it conversational and not too long.`;
       
-      // Inject Argument or Market Impact logic
-      if (!argumentTriggered && spokenAgents.size >= 2 && Math.random() > 0.5) {
+      // Inject Argument logic
+      if (!argumentTriggered && spokenAgents.size >= 1 && Math.random() > 0.5) {
         thoughtPrompt += " Also, naturally disagree or challenge a previous point to make sure we're considering all risks. Keep it sounding like a real conversation.";
         argumentTriggered = true;
         setMeetingState(prev => ({ ...prev, phase: 'DEBATE' }));
-      } else if (!marketImpactTriggered && spokenAgents.size >= 4 && Math.random() > 0.5) {
-        thoughtPrompt += " Also, casually mention the market impact of this idea.";
-        marketImpactTriggered = true;
-        setMeetingState(prev => ({ ...prev, phase: 'RISK_ASSESSMENT' }));
       }
 
-      await agentSpeak(pickedAgent, thoughtPrompt, pickedId);
-      spokenAgents.add(pickedId);
-      
-      // Anchor (Maximus) acknowledges and asks for next
-      if (spokenAgents.size < expertIds.length) {
-        setAgents(prev => ({ ...prev, maximus: { ...prev.maximus, status: 'speaking' } }));
-        await agentSpeak(
-          anchor,
-          `Just naturally say thanks to ${pickedAgent.name} and casually ask who wants to go next.`,
-          'maximus'
-        );
+      const speakSuccess = await agentSpeak(pickedAgent, thoughtPrompt, pickedId);
+      if (!speakSuccess) {
+        setMeetingState(prev => ({ ...prev, isMeetingRunning: false, phase: 'WAIT_FOR_PROMPT' }));
+        return;
       }
+      spokenAgents.add(pickedId);
     }
 
-    // Phase 5: Synthesis (Master)
+    // Phase 3: Synthesis (Master)
     setMeetingState(prev => ({ ...prev, phase: 'SYNTHESIS' }));
     addMessage({ type: 'system', content: "Meeting concluding: Master is synthesizing the final production-level solution." });
     
@@ -387,6 +368,8 @@ export default function App() {
       `As the CTO, naturally summarize the points discussed into a final plan for the Multi-Agent Edge Intelligence system. Be decisive but sound like a real human leader wrapping up a meeting. Update the Project To-Do List using the update_todo_list tool to reflect the final plan.`,
       'master'
     );
+
+    setMeetingState(prev => ({ ...prev, isMeetingRunning: false, phase: 'WAIT_FOR_PROMPT' }));
   };
 
   const completeLastMessage = () => {
@@ -716,7 +699,7 @@ export default function App() {
                         "w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 shadow-lg",
                         msg.type === 'user' ? "bg-blue-600" : (msg.agentId ? AGENT_BG_COLORS[msg.agentId] : "bg-zinc-800")
                       )}>
-                        {msg.type === 'user' ? 'U' : (msg.agentId ? agents[msg.agentId].initial : 'AI')}
+                        {msg.type === 'user' ? 'U' : (msg.agentId ? (agents[msg.agentId]?.initial || 'AI') : 'AI')}
                       </div>
                       <div className={cn(
                         "max-w-[80%] rounded-2xl px-4 py-3 shadow-sm relative",
@@ -729,7 +712,7 @@ export default function App() {
                           </div>
                         )}
                         {msg.type === 'agent' && (
-                          <p className={cn("text-[10px] font-bold uppercase tracking-wider mb-1", msg.agentId && agents[msg.agentId].color)}>
+                          <p className={cn("text-[10px] font-bold uppercase tracking-wider mb-1", msg.agentId && agents[msg.agentId]?.color)}>
                             {msg.agentName}
                           </p>
                         )}
